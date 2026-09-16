@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GRank &mdash; Google Rank Checker</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --panel: #181b22;
+      --border: #2a2f3a;
+      --text: #e6e8ec;
+      --muted: #9aa3b2;
+      --accent: #4f8cff;
+      --good: #37d67a;
+      --bad: #ff6b6b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    .wrap { max-width: 900px; margin: 0 auto; padding: 32px 20px 64px; }
+    h1 { font-size: 1.6rem; margin: 0 0 4px; }
+    .sub { color: var(--muted); margin: 0 0 24px; font-size: 0.95rem; }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    label { display: block; font-weight: 600; margin-bottom: 6px; font-size: 0.9rem; }
+    .hint { color: var(--muted); font-weight: 400; font-size: 0.82rem; }
+    input[type="text"], textarea {
+      width: 100%;
+      background: #0f1218;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      padding: 10px 12px;
+      font-size: 0.95rem;
+      font-family: inherit;
+    }
+    textarea { min-height: 130px; resize: vertical; }
+    input:focus, textarea:focus { outline: none; border-color: var(--accent); }
+    .row { margin-bottom: 16px; }
+    button {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 11px 20px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .warn {
+      background: #3a2417;
+      border: 1px solid #6b3f1f;
+      color: #ffcfa3;
+      border-radius: 8px;
+      padding: 12px 14px;
+      font-size: 0.88rem;
+      margin-bottom: 20px;
+    }
+    .warn code { background: rgba(255,255,255,0.08); padding: 1px 5px; border-radius: 4px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 4px; }
+    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
+    th { color: var(--muted); font-weight: 600; }
+    td.term { font-weight: 600; }
+    .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 0.8rem; font-weight: 600; }
+    .pill.found { background: rgba(55,214,122,0.15); color: var(--good); }
+    .pill.miss { background: rgba(255,107,107,0.15); color: var(--bad); }
+    .pill.err { background: rgba(255,180,80,0.15); color: #ffb450; }
+    a { color: var(--accent); word-break: break-all; }
+    .status { color: var(--muted); font-size: 0.9rem; margin-top: 12px; }
+    .spin { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: s 0.7s linear infinite; vertical-align: -2px; margin-right: 6px; }
+    @keyframes s { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>GRank</h1>
+    <p class="sub">Find which page of Google each search term ranks your site on. Powered by the Serper.dev Google Search API.</p>
+
+    {% if not credentials_ok %}
+    <div class="warn">
+      <strong>Setup needed.</strong> Your Serper API key isn't configured yet.
+      Copy <code>.env.example</code> to <code>.env</code>, add your
+      <code>SERPER_API_KEY</code> (get a free key at serper.dev), then restart the app.
+      See the README for step-by-step instructions.
+    </div>
+    {% endif %}
+
+    <div class="panel">
+      <div class="row">
+        <label for="target">Target site
+          <span class="hint">&mdash; the domain you're looking for (e.g. example.com)</span>
+        </label>
+        <input type="text" id="target" placeholder="example.com" autocomplete="off" />
+      </div>
+      <div class="row">
+        <label for="terms">Search terms
+          <span class="hint">&mdash; one per line (or comma-separated)</span>
+        </label>
+        <textarea id="terms" placeholder="best running shoes&#10;marathon training plan&#10;trail shoes review"></textarea>
+      </div>
+      <button id="run">Check rankings</button>
+      <div class="status" id="status"></div>
+    </div>
+
+    <div class="panel" id="resultsPanel" style="display:none;">
+      <table>
+        <thead>
+          <tr><th>Search term</th><th>Result</th><th>Page</th><th>Position</th><th>Matched URL</th></tr>
+        </thead>
+        <tbody id="resultsBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    const runBtn = document.getElementById("run");
+    const statusEl = document.getElementById("status");
+    const panel = document.getElementById("resultsPanel");
+    const body = document.getElementById("resultsBody");
+
+    function escapeHtml(s) {
+      return String(s ?? "").replace(/[&<>"']/g, c => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+      }[c]));
+    }
+
+    function renderRow(r) {
+      let result, page, pos, url;
+      if (r.error) {
+        result = `<span class="pill err">Error</span>`;
+        page = "&mdash;"; pos = "&mdash;";
+        url = `<span class="hint">${escapeHtml(r.error)}</span>`;
+      } else if (r.found) {
+        result = `<span class="pill found">Found</span>`;
+        page = `Page ${r.page}`;
+        pos = `#${r.position}`;
+        url = `<a href="${escapeHtml(r.url)}" target="_blank" rel="noopener">${escapeHtml(r.url)}</a>`;
+      } else {
+        result = `<span class="pill miss">Not found</span>`;
+        page = "&mdash;";
+        pos = "&mdash;";
+        url = `<span class="hint">Not in top ${r.total_results_scanned || 100} results</span>`;
+      }
+      return `<tr>
+        <td class="term">${escapeHtml(r.term)}</td>
+        <td>${result}</td>
+        <td>${page}</td>
+        <td>${pos}</td>
+        <td>${url}</td>
+      </tr>`;
+    }
+
+    async function run() {
+      const target = document.getElementById("target").value.trim();
+      const terms = document.getElementById("terms").value.trim();
+      if (!target) { statusEl.textContent = "Enter a target site first."; return; }
+      if (!terms) { statusEl.textContent = "Enter at least one search term."; return; }
+
+      runBtn.disabled = true;
+      statusEl.innerHTML = `<span class="spin"></span>Searching Google&hellip; this can take a moment per term.`;
+      panel.style.display = "none";
+      body.innerHTML = "";
+
+      try {
+        const resp = await fetch("/api/rank", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ target, terms })
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          statusEl.textContent = data.error || "Something went wrong.";
+          return;
+        }
+        body.innerHTML = data.results.map(renderRow).join("");
+        panel.style.display = "block";
+        const foundCount = data.results.filter(r => r.found).length;
+        statusEl.textContent = `Checked ${data.count} term(s) against ${data.target}. Found on a results page: ${foundCount}.`;
+      } catch (e) {
+        statusEl.textContent = "Request failed: " + e.message;
+      } finally {
+        runBtn.disabled = false;
+      }
+    }
+
+    runBtn.addEventListener("click", run);
+  </script>
+</body>
+</html>
