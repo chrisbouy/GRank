@@ -14,6 +14,7 @@ API contract (https://serper.dev):
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Optional
 
@@ -36,6 +37,9 @@ RESULTS_PER_PAGE = 10
 # How deep to look before giving up. 10 pages = top 100 results, which is
 # plenty for a rank checker (results past page 10 are rarely meaningful).
 DEFAULT_MAX_PAGES = 10
+
+# When a term isn't found, log this many top-ranking competitors at DEBUG.
+TOP_COMPETITORS_TO_LOG = 5
 
 
 class SerperSearchClient:
@@ -138,6 +142,9 @@ class SerperSearchClient:
         logger.info("Checking term=%r for target=%r", term, target_domain)
 
         scanned = 0
+        # Remember the first handful of results so we can show what actually
+        # ranks when the target isn't found (helps diagnose "why not me?").
+        top_seen: list[tuple[int, str]] = []
         for page in range(1, self.max_pages + 1):
             organic = self._request_page(term, page)
             if not organic:
@@ -148,6 +155,8 @@ class SerperSearchClient:
                 link = item.get("link", "")
                 # Prefer Serper's absolute position; fall back to computing it.
                 position = item.get("position") or ((page - 1) * RESULTS_PER_PAGE + idx + 1)
+                if len(top_seen) < TOP_COMPETITORS_TO_LOG:
+                    top_seen.append((position, link))
 
                 if _link_matches_target(link, target_domain):
                     result_page = ((position - 1) // RESULTS_PER_PAGE) + 1
@@ -175,6 +184,10 @@ class SerperSearchClient:
         logger.info(
             "NOT FOUND term=%r  scanned %d result(s) without a match", term, scanned
         )
+        # At DEBUG, show what DID rank so it's clear who you're up against.
+        if top_seen and logger.isEnabledFor(logging.DEBUG):
+            competitors = "  ".join(f"#{pos} {url}" for pos, url in top_seen)
+            logger.debug("Top results for term=%r: %s", term, competitors)
         return RankResult(term=term, found=False, total_results_scanned=scanned)
 
     def find_ranks(self, terms: list[str], target_domain: str) -> list[RankResult]:
